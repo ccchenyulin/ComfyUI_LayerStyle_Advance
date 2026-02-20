@@ -1,5 +1,5 @@
 # ComfyUI Layer Style Advance
-
+###2026年2月21日修复了Florence2图像反推节点因transformers版本过新引发的错误和修改模型加载节点模型的名称以及默认加载的模型
 [中文说明点这里](./README_CN.MD)    
 
 
