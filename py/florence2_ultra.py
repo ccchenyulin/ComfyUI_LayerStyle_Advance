@@ -27,7 +27,7 @@ fl2_model_repos = {
     "base-PromptGen-v1.5":"MiaoshouAI/Florence-2-base-PromptGen-v1.5",
     "large-PromptGen-v1.5":"MiaoshouAI/Florence-2-large-PromptGen-v1.5",
     "base-PromptGen-v2.0":"MiaoshouAI/Florence-2-base-PromptGen-v2.0",
-    "large-PromptGen-v2.0":"MiaoshouAI/Florence-2-large-PromptGen-v2.0",
+    "Florence-2-large-PromptGen-v2.0":"MiaoshouAI/Florence-2-large-PromptGen-v2.0",
     "Florence-2-Flux":"gokaygokay/Florence-2-Flux",
     "Florence-2-Flux-Large":"gokaygokay/Florence-2-Flux-Large"
 }
@@ -44,11 +44,11 @@ def fixed_get_imports(filename) -> list[str]:
     return imports
 
 def load_model(version):
-    florence_path = os.path.join(folder_paths.models_dir, "florence2")
+    import transformers
+    florence_path = os.path.join(folder_paths.models_dir, "LLM")
     os.makedirs(florence_path, exist_ok=True)
 
     model_path = os.path.join(florence_path, version)
-    attention = 'sdpa'
 
     if not os.path.exists(model_path):
         log(f"Downloading Florence2 {version} model...")
@@ -57,43 +57,54 @@ def load_model(version):
         snapshot_download(repo_id=repo_id, local_dir=model_path, ignore_patterns=["*.md", "*.txt"])
 
     try:
-        with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports):
-            # model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
-            model = AutoModelForCausalLM.from_pretrained(model_path, attn_implementation=attention, device_map=device,
-                                                         torch_dtype=torch.float32, trust_remote_code=True)
-            processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-    except Exception as e:
-        try:
-            model = AutoModelForCausalLM.from_pretrained(model_path, attn_implementation=attention, device_map=device,
-                                                         torch_dtype=torch.float32, trust_remote_code=True)
-            processor = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        except Exception as e:
-            sys.path.append(model_path)
-            # Import the Florence modules
-            if version == 'large-PromptGen-v1.5':
-                from florence2_large.modeling_florence2 import Florence2ForConditionalGeneration
-                from florence2_large.configuration_florence2 import Florence2Config
-            elif version == 'base-PromptGen-v1.5':
-                from florence2_base_ft.modeling_florence2 import Florence2ForConditionalGeneration
-                from florence2_base_ft.configuration_florence2 import Florence2Config
-            else:
-                log(f"Error loading model or tokenizer: {str(e)}", message_type='error')
-                return (None, None)
+        log(f"Loading Florence2 model with transformers v{transformers.__version__}...")
+        
+        # 确定 dtype 和 attention
+        dtype = torch.float32
+        attn_implementation = "eager" # 最稳妥的模式
 
-            # Load the model configuration
-            model_config = Florence2Config.from_pretrained(model_path)
-            # Load the model
+        # 核心修复逻辑：根据 transformers 版本决定加载方式
+        if transformers.__version__ < '4.51.0':
+            # 旧版本逻辑
             with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports):
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path, 
+                    attn_implementation=attn_implementation,
+                    torch_dtype=dtype, 
+                    trust_remote_code=True
+                )
+        else:
+            # 新版本逻辑：使用本地文件，避免远程代码冲突
+            # 注意：这里需要你把 modeling_florence2.py 放到同一个文件夹下
+            try:
+                from .modeling_florence2 import Florence2ForConditionalGeneration
+                log("Using local modeling_florence2.py for compatibility.")
                 model = Florence2ForConditionalGeneration.from_pretrained(
-                    model_path,
-                    config=model_config,
-                    attn_implementation=attention,
-                    device_map=device
-                ).to(device)
+                    model_path, 
+                    attn_implementation=attn_implementation, 
+                    torch_dtype=dtype
+                )
+            except ImportError:
+                log("Local modeling_florence2.py not found! Falling back to trust_remote_code.", message_type='warning')
+                with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports):
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_path, 
+                        attn_implementation=attn_implementation,
+                        torch_dtype=dtype, 
+                        trust_remote_code=True
+                    )
 
-            processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        # 加载 Processor
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
-    return (model.to(device), processor)
+        # 手动移动到设备（代替 device_map）
+        model = model.to(device)
+
+        return (model, processor)
+
+    except Exception as e:
+        log(f"Fatal Error loading Florence2 model: {str(e)}", message_type='error')
+        raise e
 
 def fig_to_pil(fig):
     buf = io.BytesIO()
@@ -429,7 +440,7 @@ class LS_LoadFlorence2Model:
         model_list = list(fl2_model_repos.keys())
         return {
             "required": {
-                "version": (model_list,{"default": model_list[0]}),
+                "version": (model_list,{"default": model_list[12]}),
             },
         }
 
